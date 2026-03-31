@@ -1,0 +1,55 @@
+# Reusable workflow for publishing to PyPI via trusted publishing.
+#
+# Usage in consumer projects:
+#   jobs:
+#     publish:
+#       uses: shakfu/automate/.github/workflows/reusable-publish.yml@main
+#       with:
+#         package-name: mypackage
+#         target: pypi
+#         artifact-name: all-dist
+#
+# IMPORTANT: The calling workflow MUST declare these permissions:
+#   permissions:
+#     id-token: write    # needed for trusted publishing
+#
+name: Publish
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        type: string
+        required: true
+        description: PyPI package name (used for environment URL)
+      target:
+        type: string
+        required: true
+        description: 'Publishing target: testpypi or pypi'
+      artifact-name:
+        type: string
+        default: all-dist
+        description: Name of the artifact containing wheels/sdist to publish
+
+jobs:
+  publish:
+    name: Publish to ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.target }}
+      url: ${{ inputs.target == 'pypi' && format('https://pypi.org/p/{0}', inputs.package-name) || format('https://test.pypi.org/p/{0}', inputs.package-name) }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || '' }}
+          skip-existing: true

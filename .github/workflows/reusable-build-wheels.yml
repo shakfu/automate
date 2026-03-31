@@ -120,58 +120,30 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  collect_artifacts:
+  collect:
     name: Collect artifacts
     needs: [build_wheels, build_sdist]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist/
-          merge-multiple: true
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: all-dist
-          path: dist/
+    uses: shakfu/automate/.github/workflows/reusable-collect-artifacts.yml@main
+    with:
+      pattern: ''
+      output-name: all-dist
 
   publish_testpypi:
     name: Publish to TestPyPI
     if: inputs.publish-target == 'testpypi' || inputs.publish-target == 'both'
-    needs: [collect_artifacts]
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/${{ inputs.package-name }}
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: all-dist
-          path: dist/
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
+    needs: [collect]
+    uses: shakfu/automate/.github/workflows/reusable-publish.yml@main
+    with:
+      package-name: ${{ inputs.package-name }}
+      target: testpypi
+      artifact-name: all-dist
 
   publish_pypi:
     name: Publish to PyPI
     if: inputs.publish-target == 'pypi' || inputs.publish-target == 'both'
-    needs: [collect_artifacts]
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/${{ inputs.package-name }}
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: all-dist
-          path: dist/
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
+    needs: [collect]
+    uses: shakfu/automate/.github/workflows/reusable-publish.yml@main
+    with:
+      package-name: ${{ inputs.package-name }}
+      target: pypi
+      artifact-name: all-dist

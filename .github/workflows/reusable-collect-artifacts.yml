@@ -1,0 +1,53 @@
+# Reusable workflow for merging multiple upload artifacts into one.
+#
+# Usage in consumer projects:
+#   jobs:
+#     collect:
+#       uses: shakfu/automate/.github/workflows/reusable-collect-artifacts.yml@main
+#       with:
+#         pattern: "wheels-*"
+#         output-name: all-dist
+#
+name: Collect Artifacts
+
+on:
+  workflow_call:
+    inputs:
+      pattern:
+        type: string
+        default: ''
+        description: >
+          Glob pattern to match artifact names (e.g. "wheels-*").
+          Leave empty to download all artifacts.
+      output-name:
+        type: string
+        default: all-dist
+        description: Name of the merged output artifact
+      retention-days:
+        type: number
+        default: 30
+        description: Number of days to retain the merged artifact
+
+jobs:
+  collect:
+    name: Collect artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ inputs.pattern || '' }}
+          path: dist/
+          merge-multiple: true
+
+      - name: List collected files
+        run: |
+          echo "Collected $(ls dist/ | wc -l) files:"
+          ls -lh dist/
+
+      - name: Upload merged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.output-name }}
+          path: dist/
+          retention-days: ${{ inputs.retention-days }}
