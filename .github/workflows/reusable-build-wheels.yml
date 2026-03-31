@@ -1,0 +1,177 @@
+# Reusable workflow for building wheels with cibuildwheel and publishing to PyPI.
+#
+# Usage in consumer projects:
+#   jobs:
+#     build:
+#       uses: shakfu/automate/.github/workflows/reusable-build-wheels.yml@main
+#       with:
+#         package-name: mypackage
+#         publish-target: pypi
+#
+# IMPORTANT: The calling workflow MUST declare these permissions:
+#   permissions:
+#     id-token: write    # needed for trusted publishing
+#     contents: read
+#
+name: Build Wheels
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        type: string
+        required: true
+        description: PyPI package name
+      publish-target:
+        type: string
+        default: none
+        description: 'Publishing target: none, testpypi, pypi, or both'
+      os-matrix:
+        type: string
+        default: '["ubuntu-latest", "windows-latest", "macos-14"]'
+        description: JSON array of runner OS labels for wheel builds
+      cibw-build:
+        type: string
+        default: 'cp310-* cp311-* cp312-* cp313-* cp314-*'
+        description: CIBW_BUILD pattern
+      cibw-skip:
+        type: string
+        default: '*-win32 *-manylinux_i686 *-musllinux_* *-win_arm64'
+        description: CIBW_SKIP pattern
+      cibw-archs-linux:
+        type: string
+        default: 'x86_64 aarch64'
+      cibw-archs-macos:
+        type: string
+        default: 'x86_64 arm64'
+      cibw-archs-windows:
+        type: string
+        default: AMD64
+      cibw-environment-linux:
+        type: string
+        default: ''
+        description: CIBW_ENVIRONMENT_LINUX (e.g. "CFLAGS='-O3 -std=c99'")
+      cibw-environment-macos:
+        type: string
+        default: ''
+        description: CIBW_ENVIRONMENT_MACOS
+      cibw-test-requires:
+        type: string
+        default: 'pytest>=8'
+      cibw-test-command:
+        type: string
+        default: 'pytest {project}/tests -v'
+      cibw-test-skip:
+        type: string
+        default: ''
+
+jobs:
+  build_wheels:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(inputs.os-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: pypa/cibuildwheel@v3.4.0
+        env:
+          CIBW_BUILD: ${{ inputs.cibw-build }}
+          CIBW_SKIP: ${{ inputs.cibw-skip }}
+          CIBW_ARCHS_LINUX: ${{ inputs.cibw-archs-linux }}
+          CIBW_ARCHS_MACOS: ${{ inputs.cibw-archs-macos }}
+          CIBW_ARCHS_WINDOWS: ${{ inputs.cibw-archs-windows }}
+          CIBW_ENVIRONMENT_LINUX: ${{ inputs.cibw-environment-linux }}
+          CIBW_ENVIRONMENT_MACOS: ${{ inputs.cibw-environment-macos }}
+          CIBW_TEST_REQUIRES: ${{ inputs.cibw-test-requires }}
+          CIBW_TEST_COMMAND: ${{ inputs.cibw-test-command }}
+          CIBW_TEST_SKIP: ${{ inputs.cibw-test-skip }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  build_sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build sdist
+        run: python -m build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  collect_artifacts:
+    name: Collect artifacts
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all-dist
+          path: dist/
+
+  publish_testpypi:
+    name: Publish to TestPyPI
+    if: inputs.publish-target == 'testpypi' || inputs.publish-target == 'both'
+    needs: [collect_artifacts]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/${{ inputs.package-name }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: all-dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish_pypi:
+    name: Publish to PyPI
+    if: inputs.publish-target == 'pypi' || inputs.publish-target == 'both'
+    needs: [collect_artifacts]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/${{ inputs.package-name }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: all-dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

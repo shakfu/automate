@@ -1,0 +1,20 @@
+# automate's own CI -- calls the reusable CI workflow from this repo.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: ./.github/workflows/reusable-ci.yml
+    with:
+      python-versions: '["3.13"]'
+      os-matrix: '["ubuntu-latest", "macos-latest"]'
+      coverage-package: automate
+      coverage-threshold: 80
+      enable-lint: true
+      enable-typecheck: true

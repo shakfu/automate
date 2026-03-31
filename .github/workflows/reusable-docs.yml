@@ -1,0 +1,73 @@
+# Reusable workflow for building and deploying mkdocs to GitHub Pages.
+#
+# Usage in consumer projects:
+#   jobs:
+#     docs:
+#       uses: shakfu/automate/.github/workflows/reusable-docs.yml@main
+#
+# IMPORTANT: The calling workflow MUST declare these permissions:
+#   permissions:
+#     pages: write
+#     id-token: write
+#
+# And GitHub Pages must be configured to deploy from "GitHub Actions" in
+# the repository settings.
+#
+name: Docs
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: '3.12'
+        description: Python version for building docs
+      build-command:
+        type: string
+        default: 'uv run mkdocs build --strict'
+        description: Command to build the docs
+      site-dir:
+        type: string
+        default: site/
+        description: Output directory from the build command
+
+jobs:
+  build:
+    name: Build docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ inputs.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Build docs
+        run: ${{ inputs.build-command }}
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ inputs.site-dir }}
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

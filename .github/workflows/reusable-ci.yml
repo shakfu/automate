@@ -1,0 +1,173 @@
+# Reusable CI workflow for Python projects.
+#
+# Usage in consumer projects:
+#   jobs:
+#     ci:
+#       uses: shakfu/automate/.github/workflows/reusable-ci.yml@main
+#       with:
+#         coverage-package: mypackage
+#
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      python-versions:
+        type: string
+        default: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
+        description: JSON array of Python versions to test
+      os-matrix:
+        type: string
+        default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
+        description: JSON array of runner OS labels
+      coverage-threshold:
+        type: number
+        default: 80
+        description: Minimum coverage percentage
+      coverage-package:
+        type: string
+        required: true
+        description: Package name for --cov (e.g. "mypackage")
+      src-dir:
+        type: string
+        default: src/
+        description: Source directory for lint/typecheck
+      test-dir:
+        type: string
+        default: tests/
+        description: Test directory
+      test-extra-args:
+        type: string
+        default: ''
+        description: Extra pytest arguments (e.g. "--ignore=tests/examples")
+      enable-lint:
+        type: boolean
+        default: true
+      enable-typecheck:
+        type: boolean
+        default: true
+      enable-coverage:
+        type: boolean
+        default: true
+      build-command:
+        type: string
+        default: ''
+        description: >
+          Custom build command (e.g. "uv build --wheel"). Leave empty
+          for pure Python projects (just uv sync).
+      install-command:
+        type: string
+        default: ''
+        description: >
+          Custom install command after build (e.g. "uv pip install dist/*.whl").
+          Leave empty for pure Python projects.
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(inputs.python-versions) }}
+        os: ${{ fromJson(inputs.os-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Build (custom)
+        if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+
+      - name: Install (custom)
+        if: inputs.install-command != ''
+        run: ${{ inputs.install-command }}
+
+      - name: Run tests
+        run: uv run python -m pytest ${{ inputs.test-dir }} -v ${{ inputs.test-extra-args }}
+
+  coverage:
+    name: Coverage
+    if: inputs.enable-coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Build (custom)
+        if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+
+      - name: Install (custom)
+        if: inputs.install-command != ''
+        run: ${{ inputs.install-command }}
+
+      - name: Run tests with coverage
+        run: >
+          uv run python -m pytest ${{ inputs.test-dir }} -v
+          ${{ inputs.test-extra-args }}
+          --cov=${{ inputs.coverage-package }}
+          --cov-report=term-missing
+          --cov-fail-under=${{ inputs.coverage-threshold }}
+
+  lint:
+    name: Lint
+    if: inputs.enable-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check ${{ inputs.src-dir }}
+
+  type-check:
+    name: Type Check
+    if: inputs.enable-typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Type check
+        run: uv run mypy ${{ inputs.src-dir }} --ignore-missing-imports

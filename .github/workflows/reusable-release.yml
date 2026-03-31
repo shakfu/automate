@@ -1,0 +1,95 @@
+# Reusable workflow for creating GitHub Releases with changelog excerpts.
+#
+# Usage in consumer projects:
+#   on:
+#     push:
+#       tags: ['v*']
+#   jobs:
+#     release:
+#       uses: shakfu/automate/.github/workflows/reusable-release.yml@main
+#       with:
+#         project-description: "A Python library for doing things."
+#
+# IMPORTANT: The calling workflow MUST declare these permissions:
+#   permissions:
+#     contents: write    # needed to create releases
+#
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      project-description:
+        type: string
+        default: ''
+        description: One-paragraph project description for the release body
+      changelog-path:
+        type: string
+        default: CHANGELOG.md
+        description: Path to the changelog file relative to repo root
+      attach-artifacts:
+        type: boolean
+        default: false
+        description: Whether to download and attach artifacts from a prior workflow run
+      artifact-name:
+        type: string
+        default: all-dist
+        description: Name of the artifact to download and attach
+      automate-ref:
+        type: string
+        default: main
+        description: Git ref of shakfu/automate to install the CLI from
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install automate CLI
+        run: pip install "git+https://github.com/shakfu/automate.git@${{ inputs.automate-ref }}"
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Strip leading 'v' from tag (e.g. v0.2.0 -> 0.2.0)
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release body
+        id: body
+        run: |
+          ARGS=("release-body" "${{ steps.version.outputs.version }}" "-f" "${{ inputs.changelog-path }}")
+          if [ -n "${{ inputs.project-description }}" ]; then
+            ARGS+=("-d" "${{ inputs.project-description }}")
+          fi
+          automate "${ARGS[@]}" > release-body.md
+
+      - name: Download artifacts
+        if: inputs.attach-artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARGS=("gh" "release" "create" "${{ steps.version.outputs.tag }}"
+                "--title" "${{ steps.version.outputs.tag }}"
+                "--notes-file" "release-body.md")
+          if [ "${{ inputs.attach-artifacts }}" = "true" ]; then
+            ARGS+=(dist/*)
+          fi
+          "${ARGS[@]}"
