@@ -7,6 +7,15 @@
 #       with:
 #         coverage-package: mypackage
 #
+# Shell safety: every input except build-command and install-command reaches
+# bash through step-level `env:`, never `${{ }}` interpolation inside `run:`.
+# Those two are shell commands by definition and are interpolated deliberately.
+#
+# IMPORTANT: `python-versions` must be a subset of your project's
+# `requires-python`. The test job pins each matrix cell via UV_PYTHON, so a
+# version your project does not support fails the sync step outright rather
+# than silently testing a different interpreter.
+#
 name: CI
 
 on:
@@ -15,11 +24,18 @@ on:
       python-versions:
         type: string
         default: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
-        description: JSON array of Python versions to test
+        description: >
+          JSON array of Python versions to test. Must be a subset of the
+          project's requires-python; unsupported entries fail rather than
+          silently testing a different interpreter.
       os-matrix:
         type: string
-        default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
-        description: JSON array of runner OS labels
+        default: '["ubuntu-latest"]'
+        description: >
+          JSON array of runner OS labels. Defaults to Linux only: the matrix
+          is a cross product, so adding macOS and Windows triples the job
+          count. Set '["ubuntu-latest", "macos-latest", "windows-latest"]'
+          when the project has platform-specific behaviour worth testing.
       coverage-threshold:
         type: number
         default: 80
@@ -31,7 +47,13 @@ on:
       src-dir:
         type: string
         default: src/
-        description: Source directory for lint/typecheck
+        description: Source directory for the type checker
+      lint-paths:
+        type: string
+        default: src/ tests/
+        description: >
+          Space-separated paths to lint. Defaults to source and tests, so a
+          local `ruff check src/ tests/` matches what CI runs.
       test-dir:
         type: string
         default: tests/
@@ -40,6 +62,20 @@ on:
         type: string
         default: ''
         description: Extra pytest arguments (e.g. "--ignore=tests/examples")
+      typecheck-args:
+        type: string
+        default: ''
+        description: >
+          Extra mypy arguments. Empty by default so the project's own
+          [tool.mypy] settings govern; pass "--ignore-missing-imports" to
+          relax them rather than having CI relax them for you.
+      tool-python-version:
+        type: string
+        default: '3.13'
+        description: >
+          Python for the lint and type-check jobs. Advisory only: uv resolves
+          the project interpreter itself from requires-python and any
+          .python-version file.
       enable-lint:
         type: boolean
         default: true
@@ -49,39 +85,58 @@ on:
       enable-coverage:
         type: boolean
         default: true
+        description: >
+          Collect coverage and enforce coverage-threshold as part of the test
+          job. There is no separate coverage job: a second job would re-run
+          the whole suite, and any custom build with it.
       build-command:
         type: string
         default: ''
         description: >
           Custom build command (e.g. "uv build --wheel"). Leave empty
-          for pure Python projects (just uv sync).
+          for pure Python projects (just uv sync). This input is executed
+          as a shell command by design; every other input is passed as
+          data through `env:`. Treat callers who can set it as trusted.
       install-command:
         type: string
         default: ''
         description: >
           Custom install command after build (e.g. "uv pip install dist/*.whl").
-          Leave empty for pure Python projects.
+          Leave empty for pure Python projects. Executed as a shell command,
+          same trust note as build-command.
+
+# Superseded runs on the same ref are cancelled, except on the default branch
+# where a completed run is often a release gate. The group is suffixed so it
+# cannot collide with a concurrency group the caller defines for itself.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-automate-ci
+  cancel-in-progress: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
 
 jobs:
   test:
     name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # UV_PYTHON is what actually pins the interpreter. Bare `uv sync` resolves
+    # via uv's own discovery -- a `.python-version` file wins outright, and even
+    # without one uv does not necessarily take the interpreter setup-python put
+    # on PATH. Without this, every matrix cell can run the same interpreter
+    # while reporting distinct version labels.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       fail-fast: false
       matrix:
         python-version: ${{ fromJson(inputs.python-versions) }}
         os: ${{ fromJson(inputs.os-matrix) }}
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
       - name: Sync dependencies
         run: uv sync
 
@@ -94,80 +149,81 @@ jobs:
         run: ${{ inputs.install-command }}
 
       - name: Run tests
-        run: uv run python -m pytest ${{ inputs.test-dir }} -v ${{ inputs.test-extra-args }}
-
-  coverage:
-    name: Coverage
-    if: inputs.enable-coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Sync dependencies
-        run: uv sync
-
-      - name: Build (custom)
-        if: inputs.build-command != ''
-        run: ${{ inputs.build-command }}
-
-      - name: Install (custom)
-        if: inputs.install-command != ''
-        run: ${{ inputs.install-command }}
+        if: '!inputs.enable-coverage'
+        env:
+          TEST_DIR: ${{ inputs.test-dir }}
+          TEST_EXTRA_ARGS: ${{ inputs.test-extra-args }}
+        run: |
+          # TEST_EXTRA_ARGS is deliberately unquoted so it word-splits into
+          # separate pytest arguments. As an env var it still cannot execute:
+          # bash does not re-evaluate the result of a variable expansion.
+          # shellcheck disable=SC2086
+          uv run python -m pytest "$TEST_DIR" -v $TEST_EXTRA_ARGS
 
       - name: Run tests with coverage
-        run: >
-          uv run python -m pytest ${{ inputs.test-dir }} -v
-          ${{ inputs.test-extra-args }}
-          --cov=${{ inputs.coverage-package }}
-          --cov-report=term-missing
-          --cov-fail-under=${{ inputs.coverage-threshold }}
+        if: inputs.enable-coverage
+        env:
+          TEST_DIR: ${{ inputs.test-dir }}
+          TEST_EXTRA_ARGS: ${{ inputs.test-extra-args }}
+          COVERAGE_PACKAGE: ${{ inputs.coverage-package }}
+          COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
+        run: |
+          # shellcheck disable=SC2086  # see the note in the step above
+          uv run python -m pytest "$TEST_DIR" -v $TEST_EXTRA_ARGS \
+            --cov="$COVERAGE_PACKAGE" \
+            --cov-report=term-missing \
+            --cov-fail-under="$COVERAGE_THRESHOLD"
 
   lint:
     name: Lint
     if: inputs.enable-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
-          python-version: '3.12'
+          python-version: ${{ inputs.tool-python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
       - name: Sync dependencies
         run: uv sync
 
       - name: Lint
-        run: uv run ruff check ${{ inputs.src-dir }}
+        env:
+          LINT_PATHS: ${{ inputs.lint-paths }}
+        run: |
+          # shellcheck disable=SC2086  # LINT_PATHS is a space-separated list
+          uv run ruff check $LINT_PATHS
+
+      - name: Check formatting
+        env:
+          LINT_PATHS: ${{ inputs.lint-paths }}
+        run: |
+          # shellcheck disable=SC2086
+          uv run ruff format --check $LINT_PATHS
 
   type-check:
     name: Type Check
     if: inputs.enable-typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
-          python-version: '3.12'
+          python-version: ${{ inputs.tool-python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
       - name: Sync dependencies
         run: uv sync
 
       - name: Type check
-        run: uv run mypy ${{ inputs.src-dir }} --ignore-missing-imports
+        env:
+          SRC_DIR: ${{ inputs.src-dir }}
+          TYPECHECK_ARGS: ${{ inputs.typecheck-args }}
+        run: |
+          # shellcheck disable=SC2086  # TYPECHECK_ARGS word-splits into flags
+          uv run mypy "$SRC_DIR" $TYPECHECK_ARGS

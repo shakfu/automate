@@ -9,12 +9,27 @@ on:
   workflow_dispatch:
 
 jobs:
+  # actionlint validates YAML, expression syntax, and action references, and
+  # runs shellcheck over every `run:` body. It does NOT catch injection via
+  # workflow_call inputs -- its script-injection rule fires only for
+  # expressions it classifies as untrusted -- so tests/test_workflows.py
+  # covers that case separately.
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Run actionlint
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
   ci:
     uses: ./.github/workflows/reusable-ci.yml
     with:
       python-versions: '["3.13"]'
       os-matrix: '["ubuntu-latest", "macos-latest"]'
       coverage-package: automate
-      coverage-threshold: 80
+      coverage-threshold: 95
       enable-lint: true
       enable-typecheck: true

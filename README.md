@@ -46,7 +46,34 @@ automate changelog get 0.2.0 -f CHANGELOG.md
 - Fixed memory leak in long-running processes.
 ```
 
-Use `--format plain` to strip markdown bold markers.
+Use `--format plain` to strip markdown bold markers (`**`). Other markup is left intact.
+
+### Lint a changelog
+
+```bash
+automate changelog lint -f CHANGELOG.md
+```
+
+```
+CHANGELOG.md:9: error: unknown-section: 'Security Fixes' is not one of Added, Changed, Deprecated, Fixed, Removed, Security; its items are dropped from the structured view
+CHANGELOG.md:15: error: non-dash-bullet: list items must start with '- '; this one is dropped from the structured view
+2 error(s), 0 warning(s)
+```
+
+Reports content the parser would drop or misattribute. Exits non-zero on errors, so a release workflow can gate on it; `--strict` also fails on warnings. Codes:
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `unparsed-heading` | error | A `##` heading that is not a version heading; content below it belongs to no entry |
+| `unknown-section` | error | A `### Section` outside the Keep a Changelog set; its items vanish from the structured view |
+| `non-dash-bullet` | error | A `*` or `+` list item; dropped from the structured view |
+| `orphan-content` | error | Content under a version heading but outside any section |
+| `duplicate-version` | error | Two entries share a version; lookups return the first |
+| `non-list-content` | warning | Non-list content inside a section: kept verbatim, absent from the structured view |
+| `missing-date` | warning | A released version with no date |
+| `empty-section` | warning | A section heading with no items |
+
+Content inside fenced code blocks is ignored, so a changelog that documents the format does not fail its own lint.
 
 ### Generate a GitHub Release body
 
@@ -77,16 +104,16 @@ All workflows are called via `uses: shakfu/automate/.github/workflows/<name>@mai
 The workflows are designed as independent, composable pieces:
 
 ```
-reusable-ci.yml              test / lint / typecheck (independent)
-reusable-docs.yml            mkdocs build + GitHub Pages deploy (independent)
-reusable-release.yml         GitHub Release from tag + changelog (independent)
+reusable-ci.yml              test / lint / typecheck
+reusable-docs.yml            mkdocs build + GitHub Pages deploy
+reusable-release.yml         GitHub Release from tag + changelog
+reusable-build-wheels.yml    cibuildwheel + collect + publish (self-contained)
 
-reusable-build-wheels.yml    cibuildwheel + collect + publish (convenience combo)
-    |-- reusable-collect-artifacts.yml    merge multiple artifacts
-    |-- reusable-publish.yml             trusted publishing to PyPI/TestPyPI
+reusable-collect-artifacts.yml    merge multiple artifacts   } building blocks for
+reusable-publish.yml              trusted publishing         } your own build jobs
 ```
 
-The top three are fully independent. `reusable-build-wheels.yml` is a convenience workflow that internally composes the collect and publish steps. For complex builds, use `reusable-collect-artifacts.yml` and `reusable-publish.yml` directly with your own build jobs.
+Every workflow is independent and makes no nested `uses:` calls, so pinning one to a tag or SHA pins everything it runs. `reusable-build-wheels.yml` covers the common case end to end; for complex builds, use `reusable-collect-artifacts.yml` and `reusable-publish.yml` directly with your own build jobs.
 
 ---
 
@@ -97,8 +124,12 @@ A standard Python project with cibuildwheel, mkdocs, and PyPI publishing needs f
 ### Prerequisites
 
 1. Configure [trusted publishing](https://docs.pypi.org/trusted-publishers/) on PyPI and TestPyPI for your repository.
+
 2. Create GitHub environments named `pypi` and `testpypi` in your repository settings.
-3. Set GitHub Pages source to "GitHub Actions" in your repository settings.
+
+3. Add a required reviewer to the `pypi` environment. Nothing in these workflows gates the step between building and publishing; the environment approval is that gate, and it is a repository setting.
+
+4. Set GitHub Pages source to "GitHub Actions" in your repository settings.
 
 ### CI (test, lint, typecheck)
 
@@ -132,22 +163,31 @@ jobs:
       test-extra-args: "--ignore=tests/examples"
 ```
 
+Each matrix cell pins its interpreter with `UV_PYTHON`, so the reported Python version is the one actually tested. Set `python-versions` to a subset of your project's `requires-python`; an entry outside that range fails the sync step rather than quietly testing a different interpreter.
+
 All inputs have sensible defaults. Override only what differs from your setup:
 
 | Input | Default | Description |
 |---|---|---|
-| `python-versions` | `'["3.10","3.11","3.12","3.13","3.14"]'` | JSON array of Python versions |
-| `os-matrix` | `'["ubuntu-latest","macos-latest","windows-latest"]'` | JSON array of OS labels |
+| `python-versions` | `'["3.10","3.11","3.12","3.13","3.14"]'` | JSON array of Python versions. Must be a subset of your `requires-python` |
+| `os-matrix` | `'["ubuntu-latest"]'` | JSON array of OS labels. Linux only by default: the matrix is a cross product |
 | `coverage-threshold` | `80` | Minimum coverage percentage |
 | `coverage-package` | *required* | Package name for `--cov` |
-| `src-dir` | `src/` | Source directory for lint/typecheck |
+| `src-dir` | `src/` | Source directory for the type checker |
+| `lint-paths` | `src/ tests/` | Space-separated paths to lint and format-check |
 | `test-dir` | `tests/` | Test directory |
 | `test-extra-args` | `''` | Extra pytest arguments |
-| `enable-lint` | `true` | Run `ruff check` |
+| `typecheck-args` | `''` | Extra mypy arguments; empty so your `[tool.mypy]` governs |
+| `tool-python-version` | `'3.13'` | Python for the lint and type-check jobs |
+| `enable-lint` | `true` | Run `ruff check` and `ruff format --check` |
 | `enable-typecheck` | `true` | Run `mypy` |
-| `enable-coverage` | `true` | Run coverage check |
+| `enable-coverage` | `true` | Collect coverage and enforce the threshold, inside the test job |
 | `build-command` | `''` | Custom build command (empty = just `uv sync`) |
 | `install-command` | `''` | Custom install after build |
+
+Three jobs run: `test` (matrix), `lint`, and `type-check`. Coverage is collected inside the test job rather than in a job of its own, which would re-run the whole suite and any custom build with it.
+
+Superseded runs on the same ref are cancelled, except on the default branch.
 
 ### Build wheels and publish
 
@@ -193,6 +233,7 @@ jobs:
 | `cibw-test-requires` | `'pytest>=8'` | Test dependencies |
 | `cibw-test-command` | `'pytest {project}/tests -v'` | Test command |
 | `cibw-test-skip` | `''` | Platforms to skip testing |
+| `pypi-skip-existing` | `false` | Treat an already-published version as success. Off by default: a silent no-op looks like a successful release |
 
 ### Documentation
 
@@ -253,14 +294,22 @@ This creates a GitHub Release when you push a tag. The release body includes the
 | `attach-artifacts` | `false` | Attach wheel artifacts |
 | `artifact-name` | `all-dist` | Artifact name to download |
 | `automate-ref` | `main` | Git ref of automate to install |
+| `lint-changelog` | `true` | Run `automate changelog lint` and fail on errors before generating the body |
+
+The workflow refuses to run on anything but a tag push, rather than deriving a version from a branch name and failing later with a confusing message.
 
 ### Release process (simple project)
 
 1. Update `CHANGELOG.md` with the new version entry.
+
 2. Bump the version in `pyproject.toml`.
+
 3. Commit and push to `main`.
+
 4. Trigger the build-wheels workflow from the Actions tab. Select `pypi` as the publish target.
+
 5. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`
+
 6. The release workflow creates the GitHub Release automatically.
 
 ---
@@ -290,6 +339,7 @@ Replace `reusable-build-wheels.yml` with your own build jobs. Use `reusable-coll
 | `package-name` | *required* | PyPI package name |
 | `target` | *required* | `testpypi` or `pypi` |
 | `artifact-name` | `all-dist` | Artifact to publish |
+| `skip-existing` | `false` | Treat an already-published version as success |
 
 Required permissions in the calling workflow:
 
@@ -326,6 +376,7 @@ jobs:
       - uses: actions/checkout@v4
       # ... custom CUDA toolchain setup ...
       # ... custom build steps ...
+
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-cuda
@@ -338,6 +389,7 @@ jobs:
       - uses: actions/checkout@v4
       # ... custom ROCm toolchain setup ...
       # ... custom build steps ...
+
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-rocm
@@ -416,7 +468,27 @@ The CLI expects [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format:
 - Bug fix description.
 ```
 
-Version headers must match `## [VERSION]` or `## [VERSION] - YYYY-MM-DD`. Section headers must be one of: Added, Changed, Deprecated, Removed, Fixed, Security.
+Version headers must match one of:
+
+```markdown
+## [Unreleased]
+## [0.2.0]
+## [0.2.0] - 2025-06-01
+## [0.2.0](https://github.com/owner/repo/releases/tag/v0.2.0) - 2025-06-01
+## [0.2.0] - 2025-06-01 [YANKED]
+```
+
+Any other `##` heading after the first version heading ends the entry above it rather than being absorbed into it, and is reported in `Changelog.unparsed_headings` so a release can be failed on it. Headings before the first version heading are preamble.
+
+`automate changelog get` and `automate release-body` reproduce the entry verbatim from the source file, so tables, fenced code blocks, `*` bullets, and section headings outside the conventional set are preserved as written. A trailing block of link-reference definitions (`[1.0.0]: https://...`) is treated as belonging to the document rather than to the last entry, and is excluded.
+
+The structured view exposed by the `automate.changelog` API (`ChangelogEntry.sections`) is narrower: it records only `### Section` headings of a single word and `- ` bullets. Use `ChangelogEntry.raw` when the goal is to reproduce the source.
+
+## Supply chain
+
+Third-party actions are pinned to commit SHAs rather than tags, with the tag kept in a trailing comment. A tag is a moving pointer its owner can repoint; these workflows hold `contents: write` and `id-token: write`, so the ref they run is part of the release supply chain. `.github/dependabot.yml` keeps the pins current, and `tests/test_workflows.py` fails if an unpinned action appears.
+
+No workflow makes a nested cross-repo `uses:` call, so pinning one of these workflows to a tag or SHA pins everything it runs.
 
 ## Development
 
@@ -426,9 +498,12 @@ cd automate
 uv sync
 make test       # run tests
 make lint       # ruff check
+make format-check  # ruff format --check
 make typecheck  # mypy
 make qa         # all of the above
 ```
+
+Workflow changes are checked by [actionlint](https://github.com/rhysd/actionlint) in CI and by `tests/test_workflows.py`, which asserts no caller-supplied value is interpolated into a `run:` body, no cross-repo nested workflow calls exist, and every action is SHA-pinned.
 
 ## License
 

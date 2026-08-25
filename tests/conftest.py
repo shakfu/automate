@@ -23,3 +23,8 @@ def multi_version_changelog(testdata_dir: Path) -> Path:
 @pytest.fixture
 def cymongoose_changelog(testdata_dir: Path) -> Path:
     return testdata_dir / "changelog_cymongoose.md"
+
+
+@pytest.fixture
+def rich_changelog(testdata_dir: Path) -> Path:
+    return testdata_dir / "changelog_rich.md"

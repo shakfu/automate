@@ -1,4 +1,4 @@
-.PHONY: all sync test lint format typecheck qa coverage clean help
+.PHONY: all sync test lint format format-check typecheck workflows qa coverage clean help
 
 all: sync
 
@@ -14,10 +14,16 @@ lint:
 format:
 	@uv run ruff format src/ tests/
 
+format-check:
+	@uv run ruff format --check src/ tests/
+
+workflows:
+	@command -v actionlint >/dev/null 2>&1 && actionlint || echo "actionlint not installed; skipping (CI runs it)"
+
 typecheck:
 	@uv run mypy src/
 
-qa: lint typecheck test
+qa: lint format-check typecheck workflows test
 
 coverage:
 	@uv run python -m pytest tests/ -v --cov=automate --cov-report=term-missing
@@ -32,7 +38,9 @@ help:
 	@echo "  test      - Run tests"
 	@echo "  lint      - Lint with ruff"
 	@echo "  format    - Format with ruff"
+	@echo "  format-check - Check formatting without rewriting"
+	@echo "  workflows - Lint GitHub Actions workflows with actionlint"
 	@echo "  typecheck - Type check with mypy"
-	@echo "  qa        - Full QA (lint + typecheck + test)"
+	@echo "  qa        - Full QA (lint + format-check + typecheck + workflows + test)"
 	@echo "  coverage  - Run tests with coverage"
 	@echo "  clean     - Remove build artifacts"

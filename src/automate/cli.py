@@ -5,7 +5,7 @@ from pathlib import Path
 import click
 
 from automate import __version__
-from automate.changelog import parse_changelog
+from automate.changelog import lint_changelog, parse_changelog
 
 
 @click.group()
@@ -37,18 +37,20 @@ def changelog() -> None:
     help="Output format.",
 )
 def changelog_get(version: str, filepath: Path, fmt: str) -> None:
-    """Extract changelog entry for VERSION (e.g. '0.2.0' or 'Unreleased')."""
+    """Extract changelog entry for VERSION (e.g. '0.2.0' or 'Unreleased').
+
+    The entry is reproduced verbatim from the source file, so tables, fenced
+    code, and non-standard section headings are preserved as written.
+    """
     cl = parse_changelog(filepath)
     entry = cl.get_version(version)
     if entry is None:
         raise click.ClickException(f"Version '{version}' not found in {filepath}")
     if fmt == "markdown":
-        click.echo(entry.to_markdown())
+        click.echo(entry.raw)
     else:
         # Plain: strip markdown bold markers
-        text = entry.to_markdown()
-        text = text.replace("**", "")
-        click.echo(text)
+        click.echo(entry.raw.replace("**", ""))
 
 
 @changelog.command("list")
@@ -103,6 +105,41 @@ def release_body(version: str, filepath: Path, description: str) -> None:
 
     parts.append("## Changes since the last release")
     parts.append("")
-    parts.append(entry.to_markdown())
+    parts.append(entry.raw)
 
     click.echo("\n".join(parts))
+
+
+@changelog.command("lint")
+@click.option(
+    "--file",
+    "-f",
+    "filepath",
+    default="CHANGELOG.md",
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to the changelog file.",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Treat warnings as errors.",
+)
+def changelog_lint(filepath: Path, strict: bool) -> None:
+    """Report content the parser would drop or misattribute.
+
+    Exits non-zero when errors are found, so a release workflow can gate on it.
+    Warnings do not fail the run unless --strict is given.
+    """
+    issues = lint_changelog(filepath)
+    if not issues:
+        click.echo(f"{filepath}: no issues")
+        return
+
+    for issue in issues:
+        click.echo(f"{filepath}:{issue.line}: {issue.severity}: {issue.code}: {issue.message}")
+
+    errors = sum(1 for i in issues if i.severity == "error")
+    warnings = len(issues) - errors
+    click.echo(f"{errors} error(s), {warnings} warning(s)", err=True)
+    if errors or (strict and warnings):
+        raise SystemExit(1)

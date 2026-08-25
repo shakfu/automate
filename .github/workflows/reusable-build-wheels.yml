@@ -13,6 +13,14 @@
 #     id-token: write    # needed for trusted publishing
 #     contents: read
 #
+# This workflow is self-contained: it makes no nested `uses:` calls, so
+# pinning it to a tag or SHA pins everything it runs.
+#
+# There is no approval step between building and publishing: selecting
+# publish-target: pypi on a workflow_dispatch run publishes immediately. Add a
+# required reviewer to the `pypi` GitHub environment if you want a human gate;
+# that is a repository setting, not something this workflow can enforce.
+#
 name: Build Wheels
 
 on:
@@ -64,6 +72,13 @@ on:
       cibw-test-skip:
         type: string
         default: ''
+      pypi-skip-existing:
+        type: boolean
+        default: false
+        description: >
+          Treat an already-present version on PyPI as success. Off by default:
+          a silent no-op looks identical to a successful release. TestPyPI
+          always skips existing, where re-running a build is routine.
 
 jobs:
   build_wheels:
@@ -74,11 +89,11 @@ jobs:
       matrix:
         os: ${{ fromJson(inputs.os-matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           submodules: true
 
-      - uses: pypa/cibuildwheel@v3.4.0
+      - uses: pypa/cibuildwheel@ee02a1537ce3071a004a6b08c41e72f0fdc42d9a  # v3.4.0
         env:
           CIBW_BUILD: ${{ inputs.cibw-build }}
           CIBW_SKIP: ${{ inputs.cibw-skip }}
@@ -91,7 +106,7 @@ jobs:
           CIBW_TEST_COMMAND: ${{ inputs.cibw-test-command }}
           CIBW_TEST_SKIP: ${{ inputs.cibw-test-skip }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -100,12 +115,12 @@ jobs:
     name: Build sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           submodules: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
 
@@ -115,7 +130,7 @@ jobs:
       - name: Build sdist
         run: python -m build --sdist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -123,27 +138,96 @@ jobs:
   collect:
     name: Collect artifacts
     needs: [build_wheels, build_sdist]
-    uses: shakfu/automate/.github/workflows/reusable-collect-artifacts.yml@main
-    with:
-      pattern: ''
-      output-name: all-dist
+    runs-on: ubuntu-latest
+    steps:
+      # Downloaded by explicit name/pattern rather than "everything in the
+      # run": a blanket download would sweep up any other artifact the caller
+      # uploaded (coverage reports, logs) and publish it to PyPI.
+      - name: Download wheels
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          pattern: wheels-*
+          path: dist/
+          merge-multiple: true
 
+      - name: Download sdist
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: sdist
+          path: dist/
+
+      - name: Verify distribution contents
+        run: |
+          echo "Collected $(find dist -type f | wc -l) files:"
+          ls -lh dist/
+          UNEXPECTED=$(find dist -type f ! -name '*.whl' ! -name '*.tar.gz')
+          if [ -n "$UNEXPECTED" ]; then
+            echo "refusing to publish non-distribution files:" >&2
+            echo "$UNEXPECTED" >&2
+            exit 1
+          fi
+          if [ "$(find dist -type f | wc -l)" -eq 0 ]; then
+            echo "no distributions were built" >&2
+            exit 1
+          fi
+
+      - name: Upload merged artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: all-dist
+          path: dist/
+          retention-days: 30
+
+  # The publish jobs are inlined rather than delegated to
+  # reusable-publish.yml. A `uses:` reference cannot inherit the ref its own
+  # workflow was called at, so a nested call has to name one literally --
+  # which meant a consumer pinning this workflow to a tag still ran the
+  # publish step, the one holding id-token: write, from whatever `main`
+  # happened to be. reusable-publish.yml remains available for callers who
+  # compose the pieces themselves and can pin it directly.
   publish_testpypi:
     name: Publish to TestPyPI
     if: inputs.publish-target == 'testpypi' || inputs.publish-target == 'both'
     needs: [collect]
-    uses: shakfu/automate/.github/workflows/reusable-publish.yml@main
-    with:
-      package-name: ${{ inputs.package-name }}
-      target: testpypi
-      artifact-name: all-dist
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/${{ inputs.package-name }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: all-dist
+          path: dist/
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
   publish_pypi:
     name: Publish to PyPI
     if: inputs.publish-target == 'pypi' || inputs.publish-target == 'both'
     needs: [collect]
-    uses: shakfu/automate/.github/workflows/reusable-publish.yml@main
-    with:
-      package-name: ${{ inputs.package-name }}
-      target: pypi
-      artifact-name: all-dist
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/${{ inputs.package-name }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: all-dist
+          path: dist/
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
+        with:
+          skip-existing: ${{ inputs.pypi-skip-existing }}

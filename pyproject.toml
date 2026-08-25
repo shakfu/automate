@@ -1,6 +1,6 @@
 [project]
 name = "automate"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reusable CI/CD workflows and release helpers for Python projects"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -33,6 +33,7 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.14",
     "mypy>=1.19",
+    "pyyaml>=6.0.3",
 ]
 
 [build-system]
@@ -45,6 +46,12 @@ packages = ["src/automate"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["automate"]
+# __main__.py is exercised by tests/test_cli.py::TestModuleEntryPoint, which
+# runs `python -m automate` in a subprocess; coverage cannot see into it.
+omit = ["*/automate/__main__.py"]
 
 [tool.mypy]
 python_version = "3.13"
