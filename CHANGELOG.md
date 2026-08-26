@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `automate changelog release VERSION`: stamps the accumulated `[Unreleased]` content as a dated release entry. The heading is inserted above the existing body rather than the body being re-rendered, so unmodelled markup survives byte for byte, and a date is always written -- the undated heading this project shipped in 0.2.0 cannot be produced by the command.
+
+- `automate check-release VERSION`: verifies one version is publishable -- the entry exists, carries a date, and has content, `pyproject.toml` agrees on the version, and the file has no error-severity lint issues. Stricter than `changelog lint`, which serves any changelog and so reports a missing date as a warning; here the entry is about to become a permanent release record.
+
+- `reusable-release.yml` runs `check-release` against the tagged version before generating the release body (`verify-release`, default true; `pyproject-path`, default `pyproject.toml`). A tag whose changelog entry is missing, undated, or empty now fails before the release is published rather than after.
+
+- `make release` and `make check-release`, both defaulting `VERSION` to what `pyproject.toml` declares.
+
+- `tests/test_cli.py::TestSelfRelease`: asserts this project's declared version is publishable, so a version bump landing without its changelog stamp fails CI.
+
+### Fixed
+
+- `CHANGELOG.md`: the 0.2.0 heading carried no date, which failed the project's own `changelog lint --strict` dogfooding test on every branch.
+
 ## [0.2.0] - 2026-08-26
 
 ### Added

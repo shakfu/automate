@@ -2,12 +2,14 @@
 
 import subprocess
 import sys
+from datetime import date
 from importlib.metadata import version as metadata_version
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from automate import __version__
+from automate.changelog import read_project_version
 from automate.cli import cli
 
 
@@ -232,4 +234,213 @@ class TestSelfLint:
         """Dogfooding: automate's own CHANGELOG must pass its own linter."""
         changelog = Path(__file__).parent.parent / "CHANGELOG.md"
         result = CliRunner().invoke(cli, ["changelog", "lint", "-f", str(changelog), "--strict"])
+        assert result.exit_code == 0, result.output
+
+
+class TestChangelogRelease:
+    def test_writes_dated_heading(self, tmp_path: Path, multi_version_changelog: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(multi_version_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        result = CliRunner().invoke(
+            cli,
+            ["changelog", "release", "0.4.0", "-f", str(target), "--date", "2026-08-26"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "## [0.4.0] - 2026-08-26" in target.read_text(encoding="utf-8")
+        assert "released 0.4.0 (2026-08-26)" in result.output
+
+    def test_defaults_to_today(self, tmp_path: Path, multi_version_changelog: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(multi_version_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        result = CliRunner().invoke(cli, ["changelog", "release", "0.4.0", "-f", str(target)])
+        assert result.exit_code == 0, result.output
+        assert f"## [0.4.0] - {date.today().isoformat()}" in target.read_text(encoding="utf-8")
+
+    def test_dry_run_leaves_the_file_alone(
+        self, tmp_path: Path, multi_version_changelog: Path
+    ) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        original = multi_version_changelog.read_text(encoding="utf-8")
+        target.write_text(original, encoding="utf-8")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "changelog",
+                "release",
+                "0.4.0",
+                "-f",
+                str(target),
+                "--date",
+                "2026-08-26",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert target.read_text(encoding="utf-8") == original
+        assert "## [0.4.0] - 2026-08-26" in result.output
+
+    def test_refuses_empty_unreleased(self, tmp_path: Path, simple_changelog: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(simple_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        result = CliRunner().invoke(
+            cli, ["changelog", "release", "1.1.0", "-f", str(target), "--date", "2026-08-26"]
+        )
+        assert result.exit_code != 0
+        assert "nothing to release" in result.output
+
+    def test_notes_stale_unreleased_link_definition(
+        self, tmp_path: Path, rich_changelog: Path
+    ) -> None:
+        """The footer's compare URL still points at the previous release; the
+        rewrite cannot guess the forge's URL shape, so it says so instead."""
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(
+            rich_changelog.read_text(encoding="utf-8").replace(
+                "## [Unreleased]\n\n## [1.0.0] - 2025-01-15\n", "## [Unreleased]\n"
+            ),
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            cli, ["changelog", "release", "1.0.0", "-f", str(target), "--date", "2025-01-15"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "[Unreleased] link definition" in result.output
+
+    def test_notes_pyproject_version_drift(
+        self, tmp_path: Path, multi_version_changelog: Path
+    ) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(multi_version_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "x"\nversion = "0.3.0"\n', encoding="utf-8")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "changelog",
+                "release",
+                "0.4.0",
+                "-f",
+                str(target),
+                "--date",
+                "2026-08-26",
+                "--pyproject",
+                str(pyproject),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "version is '0.3.0', not '0.4.0'" in result.output
+
+    def test_silent_when_pyproject_agrees(
+        self, tmp_path: Path, multi_version_changelog: Path
+    ) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(multi_version_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "x"\nversion = "0.4.0"\n', encoding="utf-8")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "changelog",
+                "release",
+                "0.4.0",
+                "-f",
+                str(target),
+                "--date",
+                "2026-08-26",
+                "--pyproject",
+                str(pyproject),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "note:" not in result.output
+
+
+class TestCheckRelease:
+    def test_ready_version_exits_zero(self, multi_version_changelog: Path) -> None:
+        result = CliRunner().invoke(
+            cli,
+            ["check-release", "0.3.0", "-f", str(multi_version_changelog), "--no-pyproject"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "ready to release" in result.output
+
+    def test_missing_version_exits_nonzero(self, multi_version_changelog: Path) -> None:
+        result = CliRunner().invoke(
+            cli,
+            ["check-release", "9.9.9", "-f", str(multi_version_changelog), "--no-pyproject"],
+        )
+        assert result.exit_code == 1
+        assert "version-missing:" in result.output
+        assert "1 problem(s)" in result.output
+
+    def test_undated_version_exits_nonzero(self, cymongoose_changelog: Path) -> None:
+        """The exact failure this command was added to catch before publishing
+        rather than after."""
+        result = CliRunner().invoke(
+            cli,
+            ["check-release", "0.2.0", "-f", str(cymongoose_changelog), "--no-pyproject"],
+        )
+        assert result.exit_code == 1
+        assert "missing-date:" in result.output
+
+    def test_pyproject_mismatch_exits_nonzero(
+        self, tmp_path: Path, multi_version_changelog: Path
+    ) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "x"\nversion = "0.2.0"\n', encoding="utf-8")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-release",
+                "0.3.0",
+                "-f",
+                str(multi_version_changelog),
+                "--pyproject",
+                str(pyproject),
+            ],
+        )
+        assert result.exit_code == 1
+        assert "version-mismatch:" in result.output
+
+    def test_absent_pyproject_is_skipped(
+        self, tmp_path: Path, multi_version_changelog: Path
+    ) -> None:
+        """Consumer projects need not be Python packages built from a
+        pyproject.toml, so a missing file is not a problem to report."""
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-release",
+                "0.3.0",
+                "-f",
+                str(multi_version_changelog),
+                "--pyproject",
+                str(tmp_path / "absent.toml"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+
+class TestSelfRelease:
+    def test_this_project_is_releasable_at_its_declared_version(self) -> None:
+        """Dogfooding: pyproject's version must have a dated, non-empty entry.
+
+        This is the invariant the v0.2.0 commit broke -- the heading was written
+        by hand and the date was left off -- and it holds only if the version
+        bump and the changelog stamp land together.
+        """
+        root = Path(__file__).parent.parent
+        version = read_project_version(root / "pyproject.toml")
+        assert version is not None
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-release",
+                version,
+                "-f",
+                str(root / "CHANGELOG.md"),
+                "--pyproject",
+                str(root / "pyproject.toml"),
+            ],
+        )
         assert result.exit_code == 0, result.output

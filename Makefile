@@ -1,4 +1,10 @@
-.PHONY: all sync test lint format format-check typecheck workflows qa coverage clean help
+.PHONY: all sync test lint format format-check typecheck workflows qa coverage \
+        release check-release clean help
+
+# The version to act on. Defaults to whatever pyproject.toml declares, so the
+# release flow is: bump pyproject, `make release`, `make check-release`, tag.
+VERSION ?= $(shell uv run python -c "import tomllib, pathlib; \
+	print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
 
 all: sync
 
@@ -28,6 +34,12 @@ qa: lint format-check typecheck workflows test
 coverage:
 	@uv run python -m pytest tests/ -v --cov=automate --cov-report=term-missing
 
+release:
+	@uv run automate changelog release $(VERSION)
+
+check-release:
+	@uv run automate check-release $(VERSION)
+
 clean:
 	@rm -rf build/ dist/ *.egg-info/ src/*.egg-info/ .pytest_cache/ .mypy_cache/ .ruff_cache/
 	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
@@ -43,4 +55,6 @@ help:
 	@echo "  typecheck - Type check with mypy"
 	@echo "  qa        - Full QA (lint + format-check + typecheck + workflows + test)"
 	@echo "  coverage  - Run tests with coverage"
+	@echo "  release   - Stamp [Unreleased] as VERSION (default: pyproject version)"
+	@echo "  check-release - Verify VERSION is ready to publish"
 	@echo "  clean     - Remove build artifacts"

@@ -14,6 +14,7 @@ since it keeps only recognised `### Section` blocks and `- ` bullets.
 from __future__ import annotations
 
 import re
+import tomllib
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -50,6 +51,10 @@ SECTION_RE = re.compile(r"^### (?P<name>\w+)\s*$")
 
 # [0.2.0]: https://github.com/owner/repo/releases/tag/v0.2.0
 LINK_REF_RE = re.compile(r"^\[[^\]]+\]:\s*\S")
+
+# The [Unreleased]: definition in the footer, which points at a compare URL
+# ending in HEAD and so needs rewriting whenever a release is cut.
+UNRELEASED_LINK_REF_RE = re.compile(r"^\[Unreleased\]:\s*\S", re.IGNORECASE)
 
 VALID_SECTIONS = {"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"}
 
@@ -512,3 +517,168 @@ def lint_changelog(path: Path) -> list[LintIssue]:
 
     close_section()
     return sorted(issues, key=lambda i: (i.line, i.code))
+
+
+def unreleased_link_ref(path: Path) -> int | None:
+    """Return the 1-indexed line of an `[Unreleased]: <url>` definition, or None.
+
+    The Keep a Changelog template ends with link-reference definitions, and the
+    `[Unreleased]` one points at a `compare/vX...HEAD` URL that goes stale the
+    moment a release is cut. Rewriting those URLs needs knowledge of the forge
+    and its URL shape, so `render_release` leaves them alone; callers use this
+    to tell the author the footer still needs a hand edit.
+    """
+    for index, line, in_fence in _scan(path.read_text(encoding="utf-8").splitlines()):
+        if not in_fence and UNRELEASED_LINK_REF_RE.match(line):
+            return index + 1
+    return None
+
+
+def render_release(path: Path, version: str, release_date: date) -> str:
+    """Return `path`'s text with the `[Unreleased]` content stamped as a release.
+
+    The rewrite inserts a dated `## [version] - YYYY-MM-DD` heading between the
+    `## [Unreleased]` heading and its body, leaving `[Unreleased]` in place and
+    empty. Nothing else moves: the body keeps its exact bytes, so tables, fenced
+    code, and bullet styles the tokenizer does not model survive untouched.
+
+    A date is always written, which is the point -- a heading stamped by this
+    function cannot be the undated one the linter rejects.
+
+    Args:
+        path: Path to the changelog file.
+        version: New version string, e.g. "0.3.0".
+        release_date: Date to stamp on the new heading.
+
+    Returns:
+        The complete rewritten file text, with the original file's
+        trailing-newline state preserved.
+
+    Raises:
+        ValueError: If `version` is already present, if there is no
+            `[Unreleased]` heading, or if `[Unreleased]` has no content.
+    """
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    changelog = parse_changelog(path)
+
+    if changelog.get_version(version) is not None:
+        raise ValueError(f"version {version!r} is already in {path}")
+
+    unreleased = changelog.get_unreleased()
+    if unreleased is None:
+        raise ValueError(f"no '## [Unreleased]' heading in {path}")
+    if not unreleased.raw.strip():
+        raise ValueError(f"'## [Unreleased]' in {path} has nothing to release")
+
+    heading_index = unreleased.start_line - 1
+    # Recompute the body's first line rather than assuming it follows the
+    # heading directly: parse_changelog trims leading blanks off `raw`.
+    body_start, _ = _body_span(lines, heading_index + 1, unreleased.end_line)
+
+    block = [f"## [{version}] - {release_date.isoformat()}", ""]
+    if body_start == heading_index + 1:
+        # No blank line separated the heading from its body; keep the two
+        # headings from colliding.
+        block.insert(0, "")
+
+    result = "\n".join(lines[:body_start] + block + lines[body_start:])
+    return result + "\n" if text.endswith("\n") else result
+
+
+def read_project_version(path: Path) -> str | None:
+    """Return the static `[project] version` from a pyproject.toml, or None.
+
+    None means "nothing to compare against" rather than "no version": a project
+    using `dynamic = ["version"]` has no literal to read, and callers should
+    skip the comparison instead of failing on it.
+    """
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return None
+    version = project.get("version")
+    if not isinstance(version, str):
+        return None
+    return version
+
+
+@dataclass(frozen=True)
+class ReleaseProblem:
+    """One reason a version is not ready to be released."""
+
+    code: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.code}: {self.message}"
+
+
+def check_release(
+    path: Path, version: str, project_version: str | None = None
+) -> list[ReleaseProblem]:
+    """Check that `version` is ready to be published from `path`.
+
+    This is the gate a tag push runs, and it is stricter than `lint_changelog`
+    on purpose. The linter serves any changelog and reports a missing date as a
+    warning; here the version being released is about to become a permanent
+    record, so an undated, empty, or absent entry is fatal.
+
+    Args:
+        path: Path to the changelog file.
+        version: Version being released, e.g. "0.3.0".
+        project_version: Version declared by the packaging metadata, if it could
+            be read. When given, it must equal `version`.
+
+    Returns:
+        Problems in the order they were found. Empty means ready to release.
+    """
+    problems: list[ReleaseProblem] = [
+        ReleaseProblem("changelog-lint", f"{path}:{issue.line}: {issue.code}: {issue.message}")
+        for issue in lint_changelog(path)
+        if issue.severity == "error"
+    ]
+
+    entry = parse_changelog(path).get_version(version)
+    if entry is None:
+        problems.append(
+            ReleaseProblem(
+                "version-missing",
+                f"version {version!r} has no entry in {path}; "
+                "run `automate changelog release` before tagging",
+            )
+        )
+    elif entry.is_unreleased:
+        problems.append(
+            ReleaseProblem(
+                "version-unreleased",
+                f"{version!r} is the in-progress entry, not a release; "
+                "run `automate changelog release <version>` to stamp it",
+            )
+        )
+    else:
+        if entry.release_date is None:
+            problems.append(
+                ReleaseProblem(
+                    "missing-date",
+                    f"{path}:{entry.start_line}: version {version!r} has no release date",
+                )
+            )
+        if not entry.raw.strip():
+            problems.append(
+                ReleaseProblem(
+                    "empty-entry",
+                    f"{path}:{entry.start_line}: version {version!r} has no content; "
+                    "the release body would be empty",
+                )
+            )
+
+    if project_version is not None and project_version != version:
+        problems.append(
+            ReleaseProblem(
+                "version-mismatch",
+                f"packaging metadata declares {project_version!r} but the release is {version!r}",
+            )
+        )
+
+    return problems

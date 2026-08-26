@@ -54,6 +54,19 @@ on:
         description: >
           Run `automate changelog lint` before generating the release body and
           fail on errors. Warnings do not fail the run.
+      verify-release:
+        type: boolean
+        default: true
+        description: >
+          Run `automate check-release` before generating the release body. Fails
+          if the tagged version has no changelog entry, no date, or no content,
+          or if pyproject.toml declares a different version.
+      pyproject-path:
+        type: string
+        default: pyproject.toml
+        description: >
+          Packaging metadata that `check-release` cross-checks the tag against.
+          Skipped when the file is absent or declares a dynamic version.
 
 jobs:
   release:
@@ -97,6 +110,20 @@ jobs:
         # Errors mean content the release body would drop or misattribute.
         # Better to fail here than to publish notes missing half an entry.
         run: automate changelog lint -f "$CHANGELOG_PATH"
+
+      - name: Verify release
+        if: inputs.verify-release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHANGELOG_PATH: ${{ inputs.changelog-path }}
+          PYPROJECT_PATH: ${{ inputs.pyproject-path }}
+        # Stricter than the linter, and scoped to the one version being
+        # published: an entry that is missing, undated, or empty becomes a
+        # permanent, wrong release record, so it fails here instead.
+        run: |
+          automate check-release "$VERSION" \
+            -f "$CHANGELOG_PATH" \
+            --pyproject "$PYPROJECT_PATH"
 
       - name: Generate release body
         env:

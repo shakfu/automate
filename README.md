@@ -75,6 +75,57 @@ Reports content the parser would drop or misattribute. Exits non-zero on errors,
 
 Content inside fenced code blocks is ignored, so a changelog that documents the format does not fail its own lint.
 
+### Cut a release entry
+
+```bash
+automate changelog release 0.3.0
+```
+
+```
+CHANGELOG.md: released 0.3.0 (2026-08-26)
+```
+
+Stamps the accumulated `[Unreleased]` content as a dated release:
+
+```diff
+ ## [Unreleased]
+
++## [0.3.0] - 2026-08-26
++
+ ### Added
+
+ - New plugin system for extensibility.
+```
+
+The heading is inserted above the existing body rather than the body being re-rendered, so tables, fenced code, and bullet styles the parser does not model survive byte for byte. `[Unreleased]` stays in place, empty, ready for the next cycle.
+
+A date is always written, which is the reason to use this instead of editing by hand: the undated heading `changelog lint` warns about and `check-release` rejects cannot be produced here. The command refuses to run when the version already exists, when there is no `[Unreleased]` heading, or when `[Unreleased]` is empty.
+
+`--date YYYY-MM-DD` overrides today's date; `--dry-run` prints the result instead of writing it. If `pyproject.toml` declares a different version, or the file still carries an `[Unreleased]: <url>` link definition pointing at the previous release, the command says so on stderr without failing -- both need a human decision.
+
+### Check that a version is publishable
+
+```bash
+automate check-release 0.3.0
+```
+
+```
+CHANGELOG.md: 0.3.0 is ready to release
+```
+
+Verifies one specific version, and is deliberately stricter than `changelog lint`: the entry must exist, carry a date, and have content, and `pyproject.toml` must declare the same version. Exits non-zero listing every problem found.
+
+| Code | Meaning |
+|---|---|
+| `changelog-lint` | An error-severity `changelog lint` issue anywhere in the file |
+| `version-missing` | No entry for the version being released |
+| `version-unreleased` | The version resolves to the in-progress `[Unreleased]` entry |
+| `missing-date` | The entry has no release date |
+| `empty-entry` | The entry has no content, so the release body would be empty |
+| `version-mismatch` | `pyproject.toml` declares a different version |
+
+`missing-date` is a warning in `changelog lint`, which has to serve any changelog, and a hard failure here, where the entry is about to become a permanent release record. The packaging check is skipped when `pyproject.toml` is absent or declares a dynamic version; `--pyproject PATH` points at a different file and `--no-pyproject` skips it entirely.
+
 ### Generate a GitHub Release body
 
 ```bash
@@ -295,22 +346,30 @@ This creates a GitHub Release when you push a tag. The release body includes the
 | `artifact-name` | `all-dist` | Artifact name to download |
 | `automate-ref` | `main` | Git ref of automate to install |
 | `lint-changelog` | `true` | Run `automate changelog lint` and fail on errors before generating the body |
+| `verify-release` | `true` | Run `automate check-release` on the tagged version before generating the body |
+| `pyproject-path` | `pyproject.toml` | Packaging metadata `check-release` cross-checks the tag against |
 
 The workflow refuses to run on anything but a tag push, rather than deriving a version from a branch name and failing later with a confusing message.
 
+`verify-release` is the gate that stops a bad release from being published rather than reporting it afterwards: a tag whose version has no changelog entry, no date, no content, or a version `pyproject.toml` disagrees with fails before `gh release create` runs. Set it to `false` only if your version lives somewhere the check cannot read.
+
 ### Release process (simple project)
 
-1. Update `CHANGELOG.md` with the new version entry.
+1. Bump the version in `pyproject.toml`.
 
-2. Bump the version in `pyproject.toml`.
+2. Stamp the changelog: `automate changelog release 0.2.0`. This moves the accumulated `[Unreleased]` content under a dated `## [0.2.0]` heading.
 
-3. Commit and push to `main`.
+3. Verify: `automate check-release 0.2.0`. This is the same check the release workflow runs, so a failure here is a failure you would otherwise have discovered after tagging.
 
-4. Trigger the build-wheels workflow from the Actions tab. Select `pypi` as the publish target.
+4. Commit and push to `main`. Keep the version bump and the changelog stamp in one commit -- they are one change, and splitting them leaves `main` in a state that fails its own release check.
 
-5. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`
+5. Trigger the build-wheels workflow from the Actions tab. Select `pypi` as the publish target.
 
-6. The release workflow creates the GitHub Release automatically.
+6. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`
+
+7. The release workflow re-runs `check-release` against the tag and creates the GitHub Release automatically.
+
+Steps 1 through 3 are `make release` and `make check-release` in this repository, which default `VERSION` to whatever `pyproject.toml` declares.
 
 ---
 
@@ -501,9 +560,14 @@ make lint       # ruff check
 make format-check  # ruff format --check
 make typecheck  # mypy
 make qa         # all of the above
+
+make release        # stamp [Unreleased] as VERSION (default: pyproject's version)
+make check-release  # verify VERSION is publishable
 ```
 
 Workflow changes are checked by [actionlint](https://github.com/rhysd/actionlint) in CI and by `tests/test_workflows.py`, which asserts no caller-supplied value is interpolated into a `run:` body, no cross-repo nested workflow calls exist, and every action is SHA-pinned.
+
+The test suite dogfoods the CLI against this repository: `CHANGELOG.md` must pass `changelog lint --strict`, and the version in `pyproject.toml` must pass `check-release`. Both fail in CI if a release is cut by hand and the metadata is left inconsistent.
 
 ## License
 

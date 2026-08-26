@@ -10,8 +10,12 @@ from automate.changelog import (
     Changelog,
     ChangelogEntry,
     LintIssue,
+    check_release,
     lint_changelog,
     parse_changelog,
+    read_project_version,
+    render_release,
+    unreleased_link_ref,
 )
 
 
@@ -709,3 +713,215 @@ def test_orphan_prose_under_version_heading(tmp_path: Path) -> None:
     assert len(issues) == 1
     assert issues[0].line == 5
     assert issues[0].severity == "error"
+
+
+@pytest.fixture
+def unreleased_rich(tmp_path: Path, rich_changelog: Path) -> Path:
+    """A changelog whose [Unreleased] holds rich's unmodelled content.
+
+    rich_changelog's own [Unreleased] is empty, which is the wrong shape for
+    exercising a release: dropping the `## [1.0.0]` heading moves that entry's
+    tables, fenced code, and star bullets under [Unreleased] instead.
+    """
+    target = tmp_path / "CHANGELOG.md"
+    target.write_text(
+        rich_changelog.read_text(encoding="utf-8").replace(
+            "## [Unreleased]\n\n## [1.0.0] - 2025-01-15\n", "## [Unreleased]\n"
+        ),
+        encoding="utf-8",
+    )
+    return target
+
+
+class TestRenderRelease:
+    def test_inserts_dated_heading_below_unreleased(
+        self, tmp_path: Path, multi_version_changelog: Path
+    ) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(multi_version_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        out = render_release(target, "0.4.0", date(2026, 8, 26))
+        assert "## [Unreleased]\n\n## [0.4.0] - 2026-08-26\n\n### Added" in out
+
+    def test_unreleased_survives_and_is_empty(
+        self, tmp_path: Path, multi_version_changelog: Path
+    ) -> None:
+        """The next cycle needs somewhere to write, so the heading stays."""
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(multi_version_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        target.write_text(render_release(target, "0.4.0", date(2026, 8, 26)), encoding="utf-8")
+
+        changelog = parse_changelog(target)
+        unreleased = changelog.get_unreleased()
+        assert unreleased is not None
+        assert unreleased.raw == ""
+        assert changelog.versions == ["Unreleased", "0.4.0", "0.3.0", "0.2.0", "0.1.0"]
+
+    def test_body_is_moved_verbatim(self, unreleased_rich: Path) -> None:
+        """The point of inserting a heading rather than rewriting the body: the
+        tables, fenced code, and star bullets the tokenizer drops still arrive
+        in the release intact."""
+        before = parse_changelog(unreleased_rich).get_unreleased()
+        assert before is not None
+        unreleased_rich.write_text(
+            render_release(unreleased_rich, "1.0.0", date(2025, 1, 15)), encoding="utf-8"
+        )
+        after = parse_changelog(unreleased_rich).get_version("1.0.0")
+        assert after is not None
+        assert after.raw == before.raw
+
+    def test_result_has_no_missing_date_warning(
+        self, tmp_path: Path, multi_version_changelog: Path
+    ) -> None:
+        """The regression this command exists to prevent."""
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(multi_version_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        target.write_text(render_release(target, "0.4.0", date(2026, 8, 26)), encoding="utf-8")
+        assert not [i for i in lint_changelog(target) if i.code == "missing-date"]
+
+    def test_rejects_existing_version(self, tmp_path: Path, multi_version_changelog: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(multi_version_changelog.read_text(encoding="utf-8"), encoding="utf-8")
+        with pytest.raises(ValueError, match="already in"):
+            render_release(target, "0.3.0", date(2026, 8, 26))
+
+    def test_rejects_missing_unreleased(self, tmp_path: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(
+            dedent("""\
+                # Changelog
+
+                ## [1.0.0] - 2025-01-15
+
+                ### Added
+
+                - Something.
+                """),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="no '## \\[Unreleased\\]' heading"):
+            render_release(target, "1.1.0", date(2026, 8, 26))
+
+    def test_rejects_empty_unreleased(self, simple_changelog: Path) -> None:
+        """Releasing nothing yields an empty release body; better to fail."""
+        with pytest.raises(ValueError, match="nothing to release"):
+            render_release(simple_changelog, "1.1.0", date(2026, 8, 26))
+
+    def test_handles_body_abutting_the_heading(self, tmp_path: Path) -> None:
+        """No blank line to reuse, so one has to be added or the two headings
+        end up on consecutive lines."""
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(
+            "# Changelog\n\n## [Unreleased]\n### Added\n\n- Something.\n", encoding="utf-8"
+        )
+        out = render_release(target, "1.0.0", date(2026, 8, 26))
+        assert out == (
+            "# Changelog\n\n## [Unreleased]\n\n"
+            "## [1.0.0] - 2026-08-26\n\n### Added\n\n- Something.\n"
+        )
+
+    def test_preserves_absent_trailing_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Something.", encoding="utf-8"
+        )
+        assert not render_release(target, "1.0.0", date(2026, 8, 26)).endswith("\n")
+
+    def test_preserves_trailing_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Something.\n", encoding="utf-8"
+        )
+        assert render_release(target, "1.0.0", date(2026, 8, 26)).endswith("- Something.\n")
+
+
+class TestUnreleasedLinkRef:
+    def test_finds_footer_definition(self, rich_changelog: Path) -> None:
+        assert unreleased_link_ref(rich_changelog) == 39
+
+    def test_absent_returns_none(self, simple_changelog: Path) -> None:
+        assert unreleased_link_ref(simple_changelog) is None
+
+    def test_ignores_definitions_inside_fences(self, tmp_path: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(
+            dedent("""\
+                # Changelog
+
+                ```markdown
+                [Unreleased]: https://example.com/compare/v1.0.0...HEAD
+                ```
+
+                ## [Unreleased]
+                """),
+            encoding="utf-8",
+        )
+        assert unreleased_link_ref(target) is None
+
+
+class TestReadProjectVersion:
+    def test_reads_static_version(self, tmp_path: Path) -> None:
+        target = tmp_path / "pyproject.toml"
+        target.write_text('[project]\nname = "x"\nversion = "1.2.3"\n', encoding="utf-8")
+        assert read_project_version(target) == "1.2.3"
+
+    def test_dynamic_version_is_none(self, tmp_path: Path) -> None:
+        """setuptools-scm and friends have no literal to compare against, so
+        the caller must skip the check rather than fail it."""
+        target = tmp_path / "pyproject.toml"
+        target.write_text('[project]\nname = "x"\ndynamic = ["version"]\n', encoding="utf-8")
+        assert read_project_version(target) is None
+
+    def test_missing_project_table_is_none(self, tmp_path: Path) -> None:
+        target = tmp_path / "pyproject.toml"
+        target.write_text('[build-system]\nrequires = ["hatchling"]\n', encoding="utf-8")
+        assert read_project_version(target) is None
+
+
+class TestCheckRelease:
+    def test_clean_entry_has_no_problems(self, multi_version_changelog: Path) -> None:
+        assert check_release(multi_version_changelog, "0.3.0") == []
+
+    def test_matching_project_version_has_no_problems(self, multi_version_changelog: Path) -> None:
+        assert check_release(multi_version_changelog, "0.3.0", "0.3.0") == []
+
+    def test_missing_version(self, multi_version_changelog: Path) -> None:
+        codes = [p.code for p in check_release(multi_version_changelog, "9.9.9")]
+        assert codes == ["version-missing"]
+
+    def test_unreleased_is_not_a_release(self, multi_version_changelog: Path) -> None:
+        """Tagging `vUnreleased` is absurd, but a tag of the literal string is
+        not, and the resulting entry would be undated by definition."""
+        codes = [p.code for p in check_release(multi_version_changelog, "Unreleased")]
+        assert codes == ["version-unreleased"]
+
+    def test_missing_date_is_fatal_here(self, cymongoose_changelog: Path) -> None:
+        """The linter calls this a warning; publishing it is not negotiable."""
+        undated = next(
+            e.version
+            for e in parse_changelog(cymongoose_changelog).entries
+            if not e.is_unreleased and e.release_date is None
+        )
+        codes = [p.code for p in check_release(cymongoose_changelog, undated)]
+        assert "missing-date" in codes
+
+    def test_empty_entry(self, tmp_path: Path) -> None:
+        target = tmp_path / "CHANGELOG.md"
+        target.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2025-01-15\n", encoding="utf-8"
+        )
+        codes = [p.code for p in check_release(target, "1.0.0")]
+        assert codes == ["empty-entry"]
+
+    def test_reports_lint_errors(self, rich_changelog: Path) -> None:
+        problems = check_release(rich_changelog, "1.0.0")
+        assert [p.code for p in problems] == ["changelog-lint"] * len(problems)
+        assert problems
+
+    def test_version_mismatch(self, multi_version_changelog: Path) -> None:
+        problems = check_release(multi_version_changelog, "0.3.0", "0.2.0")
+        assert [p.code for p in problems] == ["version-mismatch"]
+        assert "'0.2.0'" in problems[0].message
+
+    def test_problem_str_is_code_prefixed(self, multi_version_changelog: Path) -> None:
+        problem = check_release(multi_version_changelog, "9.9.9")[0]
+        assert str(problem).startswith("version-missing: ")
