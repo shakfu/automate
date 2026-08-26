@@ -1,6 +1,6 @@
 [project]
 name = "automate"
-version = "0.2.0"
+version = "0.3.0"
 description = "Reusable CI/CD workflows and release helpers for Python projects"
 readme = "README.md"
 requires-python = ">=3.13"

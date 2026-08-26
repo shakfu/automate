@@ -1,0 +1,23 @@
+# automate's own release workflow -- calls the reusable release workflow from
+# this repo. Its purpose beyond cutting releases is coverage: reusable-release.yml
+# is otherwise only checked structurally by tests/test_workflows.py, and a
+# release gate that has never executed is not yet a gate.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: ./.github/workflows/reusable-release.yml
+    with:
+      project-description: "Reusable CI/CD workflows and release helpers for Python projects."
+      # Generate the release with the code being released, rather than with
+      # whatever `main` points at when the tag lands. If a tagged commit ships
+      # a broken `check-release`, its own release fails -- which is the point,
+      # though it means a fix has to be cut with `verify-release: false`.
+      automate-ref: ${{ github.ref_name }}

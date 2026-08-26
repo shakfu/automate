@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-26
+
 ### Added
 
 - `automate changelog release VERSION`: stamps the accumulated `[Unreleased]` content as a dated release entry. The heading is inserted above the existing body rather than the body being re-rendered, so unmodelled markup survives byte for byte, and a date is always written -- the undated heading this project shipped in 0.2.0 cannot be produced by the command.
@@ -17,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - `make release` and `make check-release`, both defaulting `VERSION` to what `pyproject.toml` declares.
 
 - `tests/test_cli.py::TestSelfRelease`: asserts this project's declared version is publishable, so a version bump landing without its changelog stamp fails CI.
+
+- `.github/workflows/release.yml`: this repo now calls its own `reusable-release.yml` on a `v*` tag, generating the release with the code being released (`automate-ref: ${{ github.ref_name }}`). The reusable workflows were previously only checked structurally by `tests/test_workflows.py`; this is the first one to actually execute.
 
 ### Fixed
 
