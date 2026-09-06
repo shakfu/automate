@@ -144,14 +144,14 @@ jobs:
       # run": a blanket download would sweep up any other artifact the caller
       # uploaded (coverage reports, logs) and publish it to PyPI.
       - name: Download wheels
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: dist/
           merge-multiple: true
 
       - name: Download sdist
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@v8
         with:
           name: sdist
           path: dist/
@@ -196,7 +196,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+      - uses: actions/download-artifact@v8
         with:
           name: all-dist
           path: dist/
@@ -220,7 +220,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+      - uses: actions/download-artifact@v8
         with:
           name: all-dist
           path: dist/

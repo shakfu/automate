@@ -436,7 +436,7 @@ jobs:
       # ... custom CUDA toolchain setup ...
       # ... custom build steps ...
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-cuda
           path: dist/*.whl
@@ -449,7 +449,7 @@ jobs:
       # ... custom ROCm toolchain setup ...
       # ... custom build steps ...
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-rocm
           path: dist/*.whl
