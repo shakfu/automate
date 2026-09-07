@@ -1,6 +1,5 @@
-# SHA-pinned actions do not update themselves. Dependabot rewrites the pin and
-# the trailing version comment together, which is what makes pinning
-# maintainable rather than a slow drift into unpatched actions.
+# Version tags do not cross majors on their own. Dependabot bumps the ref when
+# a new major ships, so the workflows do not sit on an unmaintained one.
 version: 2
 updates:
   - package-ecosystem: github-actions

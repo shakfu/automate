@@ -176,16 +176,18 @@ def test_publish_jobs_declare_id_token(path: Path) -> None:
             )
 
 
-SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+REF_RE = re.compile(r"^(v\d+(\.\d+)*|release/v\d+|[0-9a-f]{40})$")
 
 
 @pytest.mark.parametrize("path", workflow_files(), ids=IDS)
-def test_third_party_actions_are_sha_pinned(path: Path) -> None:
-    """A tag is a moving pointer the action's owner can repoint at any commit.
+def test_third_party_actions_use_a_release_ref(path: Path) -> None:
+    """An unqualified branch name follows whatever lands on that branch next.
     These workflows hold `contents: write` and `id-token: write`, so the ref
-    they run is part of the release supply chain. Local `./` refs and Docker
-    image tags are addressed differently and are exempt."""
-    unpinned = []
+    they run is part of the release supply chain. A version tag, a release
+    branch, or a commit SHA are all accepted; SHAs are reserved for actions
+    whose ref would otherwise move on every upstream release. Local `./` refs
+    and Docker image tags are addressed differently and are exempt."""
+    offenders = []
     for job_name, job in (load(path).get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
@@ -196,18 +198,18 @@ def test_third_party_actions_are_sha_pinned(path: Path) -> None:
             if not isinstance(uses, str) or uses.startswith(("./", "docker://")):
                 continue
             ref = uses.rpartition("@")[2]
-            if not SHA_RE.match(ref):
-                unpinned.append(f"{path.name}: job '{job_name}' uses {uses}")
-    assert not unpinned, "pin to a 40-character commit SHA:\n  " + "\n  ".join(unpinned)
+            if not REF_RE.match(ref):
+                offenders.append(f"{path.name}: job '{job_name}' uses {uses}")
+    assert not offenders, "use a version tag or release branch:\n  " + "\n  ".join(offenders)
 
 
 class TestDependabot:
-    """SHA pins do not update themselves; without this they rot."""
+    """Version refs still go stale across majors; without this they rot."""
 
     CONFIG = Path(__file__).parent.parent / ".github" / "dependabot.yml"
 
     def test_config_exists(self) -> None:
-        assert self.CONFIG.exists(), "SHA-pinned actions need Dependabot to stay current"
+        assert self.CONFIG.exists(), "pinned actions need Dependabot to stay current"
 
     def test_covers_github_actions(self) -> None:
         cfg = yaml.safe_load(self.CONFIG.read_text())

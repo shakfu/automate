@@ -565,7 +565,7 @@ make release        # stamp [Unreleased] as VERSION (default: pyproject's versio
 make check-release  # verify VERSION is publishable
 ```
 
-Workflow changes are checked by [actionlint](https://github.com/rhysd/actionlint) in CI and by `tests/test_workflows.py`, which asserts no caller-supplied value is interpolated into a `run:` body, no cross-repo nested workflow calls exist, and every action is SHA-pinned.
+Workflow changes are checked by [actionlint](https://github.com/rhysd/actionlint) in CI and by `tests/test_workflows.py`, which asserts no caller-supplied value is interpolated into a `run:` body, no cross-repo nested workflow calls exist, and every action is pinned to a version tag, release branch, or commit SHA.
 
 The test suite dogfoods the CLI against this repository: `CHANGELOG.md` must pass `changelog lint --strict`, and the version in `pyproject.toml` must pass `check-release`. Both fail in CI if a release is cut by hand and the metadata is left inconsistent.
 
