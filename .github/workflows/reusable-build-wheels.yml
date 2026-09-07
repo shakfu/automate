@@ -93,7 +93,7 @@ jobs:
         with:
           submodules: true
 
-      - uses: pypa/cibuildwheel@ee02a1537ce3071a004a6b08c41e72f0fdc42d9a  # v3.4.0
+      - uses: pypa/cibuildwheel@4.2.1
         env:
           CIBW_BUILD: ${{ inputs.cibw-build }}
           CIBW_SKIP: ${{ inputs.cibw-skip }}
